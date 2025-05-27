@@ -247,7 +247,7 @@ namespace Spindles {
                 "03 20 0b 00 01 > 03 02 rpm*6",
                 "",
                 "03 03 08 00 02 > 03 04 minrpm*60/10 maxrpm*6",
-            },
+            },            
             {
                 "Huanyang",
                 0xffffffff,
@@ -261,6 +261,18 @@ namespace Spindles {
                 "01 03 05 00 00 > 01 03 05 maxRPM*60/100",
             },
             {
+                "DeltaMS300",
+                0xffffffff,
+                0xffffffff,
+                "06 20 00 00 12 > echo",                     // cw_cmd: RUN + FWD
+                "06 20 00 00 22 > echo",                     // ccw_cmd: RUN + REV
+                "06 20 00 00 01 > echo",                     // off_cmd: STOP
+                "06 20 01 rpm*50/60 > echo",                 // set_rpm_cmd
+                "03 21 03 00 01 > 03 02 rpm*60/100",         // get_rpm_cmd
+                "03 21 1A 00 01 > 03 02 minrpm",             // get_min_rpm_cmd
+                "03 21 1B 00 01 > 03 02 maxrpm",              // get_max_rpm_cmd
+            },
+            {
                 "H2A",
                 6000,
                 0xffffffff,
@@ -271,7 +283,6 @@ namespace Spindles {
                 "03 70 0C 00 01 > 03 00 02 rpm",  // or "03 70 0C 00 02 > 03 00 04 rpm 00 00",
                 "",
                 "03 B0 05 00 01 >  03 00 02 maxrpm",  // or "03 B0 05 00 02 >  03 00 04 maxrpm 03 F6",
-
             },
             {
                 "H100",
