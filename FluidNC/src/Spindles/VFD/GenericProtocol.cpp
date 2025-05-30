@@ -262,7 +262,7 @@ namespace Spindles {
                 "03 21 03 00 01 > 03 02 rpm*60/100",         // get_rpm_cmd
                 "03 21 1A 00 01 > 03 02 minrpm",             // get_min_rpm_cmd
                 "03 21 1B 00 01 > 03 02 maxrpm",             // get_max_rpm_cmd
-                "03 21 0F 00 01 > 03 02 power/655",          // get_power_cmd lee la potencia del VFD
+                "03 21 0F 00 01 > 03 02 power*100",          // get_power_cmd lee la potencia del VFD
             },
         };
         void GenericProtocol::afterParse() {

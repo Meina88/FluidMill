@@ -123,6 +123,36 @@ namespace Spindles {
                                     break;
                             }
                         }
+                            static uint32_t last_power_poll = 0;
+                                    uint32_t now = esp_timer_get_time() / 1000;
+                                    if (now - last_power_poll > 500) {  // cada 500 ms
+                                        last_power_poll = now;
+
+                                        VFD::VFDProtocol::ModbusCommand power_cmd;
+                                        auto power_parser = impl->get_output_power(power_cmd);
+                                        if (power_parser) {
+                                            power_cmd.msg[0] = instance->_modbus_id;
+                                            auto crc16 = VFD::VFDProtocol::ModRTU_CRC(power_cmd.msg, power_cmd.tx_length);
+                                            power_cmd.msg[power_cmd.tx_length++] = (crc16 & 0xFF);
+                                            power_cmd.msg[power_cmd.tx_length++] = (crc16 & 0xFF00) >> 8;
+                                            power_cmd.rx_length += 2;
+
+                                            uart.flush();
+                                            uart.write(power_cmd.msg, power_cmd.tx_length);
+                                            uart.flushTxTimed(response_ticks);
+
+                                            uint8_t rx_message[VFD::VFDProtocol::VFD_RS485_MAX_MSG_SIZE];
+                                            size_t read_length = uart.timedReadBytes(rx_message, power_cmd.rx_length, response_ticks);
+
+                                            if (read_length == power_cmd.rx_length && rx_message[0] == instance->_modbus_id) {
+                                                // Parse response → ACTUALIZA _output_power
+                                                power_parser(rx_message, instance, impl);
+                                            } else {
+                                                // opcional → log_debug("Failed power poll read");
+                                            }
+                                        }
+                                    }
+
 
                         // If we have no parser, that means get_status_ok is not implemented (and we have
                         // nothing resting in our queue). Let's fall back on a simple continue.

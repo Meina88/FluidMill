@@ -551,7 +551,7 @@ void report_realtime_status(Channel& channel) {
 
     if (spindle != nullptr) {
         uint32_t power = spindle->output_power();
-        msg << "|W:" << power;
+        msg << "|P:" << power;
     }
 
 
