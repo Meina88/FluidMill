@@ -24,6 +24,8 @@ namespace Spindles {
             };
             virtual void group(Configuration::HandlerBase& handler) {};
             virtual void afterParse() {};
+            virtual uint32_t get_output_power_value() const { return 0; }        
+
 
         protected:
             // Enable spindown / spinup settings:
@@ -39,12 +41,14 @@ namespace Spindles {
             virtual response_parser get_current_speed(ModbusCommand& data) { return nullptr; }
             virtual response_parser get_current_direction(ModbusCommand& data) { return nullptr; }
             virtual response_parser get_status_ok(ModbusCommand& data) = 0;
+            virtual response_parser get_output_power(ModbusCommand& data) { return nullptr; }
             virtual bool            safety_polling() const { return true; }
+            
 
         private:
             friend class Spindles::VFDSpindle;  // For ISR related things.
 
-            enum VFDactionType : uint8_t { actionSetSpeed, actionSetMode };
+            enum VFDactionType : uint8_t { actionSetSpeed, actionSetMode, actionGetPower };
 
             struct VFDaction {
                 VFDactionType action;

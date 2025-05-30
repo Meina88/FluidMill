@@ -97,6 +97,12 @@ namespace Spindles {
                     log_debug(spindle->name() << ": got maxRPM " << instance->_maxRPM);
                     continue;
                 }
+
+                if (set_data(token, response_view, "power", instance->_output_power)) {                    
+                    log_debug(spindle->name() << ": got power " << instance->_output_power);
+                    continue;
+                    }
+
                 if (string_util::from_hex(token, val)) {
                     if (val != response_view[0]) {
                         log_debug(spindle->name() << ": response mismatch - expected " << to_hex(val) << " got " << to_hex(response_view[0]));
@@ -151,7 +157,7 @@ namespace Spindles {
                     break;
                 }
                 if (string_util::starts_with_ignore_case(token, "rpm") || string_util::starts_with_ignore_case(token, "minrpm") ||
-                    string_util::starts_with_ignore_case(token, "maxrpm") || string_util::starts_with_ignore_case(token, "ignore")) {
+                    string_util::starts_with_ignore_case(token, "maxrpm") ||  string_util::starts_with_ignore_case(token, "power") || string_util::starts_with_ignore_case(token, "ignore")) {
                     data.rx_length += 2;
                 } else if (string_util::from_hex(token, x)) {
                     ++data.rx_length;
@@ -184,12 +190,20 @@ namespace Spindles {
                 auto instance = static_cast<GenericProtocol*>(protocol);
                 return instance->parser(response, spindle, instance);
             };
-        }
 
+        }
         void GenericProtocol::setup_speeds(VFDSpindle* vfd) {
             vfd->shelfSpeeds(_minRPM, _maxRPM);
             vfd->setupSpeeds(_maxRPM);
             vfd->_slop = 300;
+        }
+
+        VFDProtocol::response_parser GenericProtocol::get_output_power(ModbusCommand& data) {
+            send_vfd_command(_get_power_cmd, data, 0);  // esta es tu cadena tipo "03 21 1B 00 01 > 03 02"
+            return [](const uint8_t* response, VFDSpindle* spindle, VFDProtocol* protocol) -> bool {
+                auto instance = static_cast<GenericProtocol*>(protocol);
+                return instance->parser(response, spindle, instance);
+            };
         }
         VFDProtocol::response_parser GenericProtocol::initialization_sequence(int index, ModbusCommand& data, VFDSpindle* vfd) {
             // BUG:
@@ -235,79 +249,20 @@ namespace Spindles {
             const char* get_rpm_cmd;
             const char* get_min_rpm_cmd;
             const char* get_max_rpm_cmd;
+            const char* get_power_cmd;                      //Nuevo campo
         } VFDtypes[] = {
             {
-                "YL620",
+                "DeltaMS300",
                 0xffffffff,
                 0xffffffff,
-                "06 20 00 00 12 > echo",
-                "06 20 00 00 22 > echo",
-                "06 20 00 00 01 > echo",
-                "06 20 01 rpm*10/60 > echo",
-                "03 20 0b 00 01 > 03 02 rpm*6",
-                "",
-                "03 03 08 00 02 > 03 04 minrpm*60/10 maxrpm*6",
-            },
-            {
-                "Huanyang",
-                0xffffffff,
-                0xffffffff,
-                "03 01 01 > echo",
-                "03 01 11 > echo",
-                "03 01 08 > echo",
-                "05 02 rpm*100/60 > echo",
-                "04 03 01 00 00 > 04 03 01 rpm*60/100",
-                "01 03 0b 00 00 > 01 03 0B minRPM*60/100",
-                "01 03 05 00 00 > 01 03 05 maxRPM*60/100",
-            },
-            {
-                "H2A",
-                6000,
-                0xffffffff,
-                "06 20 00 00 01 > echo",
-                "06 20 00 00 02 > echo",
-                "06 20 00 00 06 > echo",
-                "06 10 00 rpm%*100 > echo",
-                "03 70 0C 00 01 > 03 00 02 rpm",  // or "03 70 0C 00 02 > 03 00 04 rpm 00 00",
-                "",
-                "03 B0 05 00 01 >  03 00 02 maxrpm",  // or "03 B0 05 00 02 >  03 00 04 maxrpm 03 F6",
-
-            },
-            {
-                "H100",
-                0xffffffff,
-                0xffffffff,
-                "05 00 49 ff 00 > echo",
-                "05 00 4A ff 00 > echo",
-                "05 00 4B ff 00 > echo",
-                "06 02 01 rpm%*4 > echo",
-                "04 00 00 00 02 > 04 04 rpm%*4 ignore",
-                "03 00 0B 00 01 > 03 02 minrpm*60",
-                "03 00 05 00 01 > 03 02 maxrpm*60",
-            },
-            {
-                "NowForever",
-                0xffffffff,
-                0xffffffff,
-                "10 09 00 00 01 02 00 01 > echo",
-                "10 09 00 00 01 02 00 03 > echo",
-                "10 09 00 00 01 02 00 00 > echo",
-                "10 09 01 00 01 02 rpm/6 > echo",
-                "03 05 02 00 01 > 03 02 rpm%*4",
-                "",
-                "03 00 07 00 02 >  03 04 maxrpm*6 minrpm*6",
-            },
-            {
-                "SiemensV20",
-                0,
-                24000,
-                "06 00 63 0C 7F > echo",
-                "06 00 63 04 7F > echo",
-                "06 00 63 0C 7E > echo",
-                "06 00 64 rpm%*16384/100 > echo",
-                "03 00 6E 00 01 > 03 02 rpm%*16384/100",
-                "",
-                "",
+                "06 20 00 00 12 > echo",                     // cw_cmd: RUN + FWD
+                "06 20 00 00 22 > echo",                     // ccw_cmd: RUN + REV
+                "06 20 00 00 01 > echo",                     // off_cmd: STOP
+                "06 20 01 rpm*50/60 > echo",                 // set_rpm_cmd
+                "03 21 03 00 01 > 03 02 rpm*60/100",         // get_rpm_cmd
+                "03 21 1A 00 01 > 03 02 minrpm",             // get_min_rpm_cmd
+                "03 21 1B 00 01 > 03 02 maxrpm",             // get_max_rpm_cmd
+                "03 21 0F 00 01 > 03 02 power/655",          // get_power_cmd lee la potencia del VFD
             },
         };
         void GenericProtocol::afterParse() {
@@ -334,6 +289,9 @@ namespace Spindles {
                     }
                     if (_get_min_rpm_cmd.empty()) {
                         _get_min_rpm_cmd = vfd.get_min_rpm_cmd;
+                    }
+                     if (_get_power_cmd.empty()) {
+                        _get_power_cmd = vfd.get_power_cmd;
                     }
                     return;
                 }

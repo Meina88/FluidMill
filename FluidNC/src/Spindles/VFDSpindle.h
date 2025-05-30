@@ -6,7 +6,7 @@
 
 #include "Spindle.h"
 #include "../Types.h"
-
+#include "VFD/VFDProtocol.h"
 #include "../Uart.h"
 
 namespace Spindles {
@@ -55,6 +55,9 @@ namespace Spindles {
         void config_message();
         void setState(SpindleState state, SpindleSpeed speed);
         void setSpeedfromISR(uint32_t dev_speed) override;
+
+        uint32_t output_power() const { return detail_ ? detail_->get_output_power_value() : 0;
+        }
 
         // volatile uint32_t _sync_dev_speed;
         uint32_t     _sync_dev_speed;

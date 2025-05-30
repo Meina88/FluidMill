@@ -141,23 +141,29 @@ namespace Spindles {
             const int limit     = 20;  // 20 * 0.5s = 10 sec
             auto      last      = _sync_dev_speed;
 
-            while ((_last_override_value == sys.spindle_speed_ovr) &&  // skip if the override changes
-                   ((_sync_dev_speed < minSpeedAllowed || _sync_dev_speed > maxSpeedAllowed) && unchanged < limit)) {
+            while ((_last_override_value == sys.spindle_speed_ovr) &&
+                ((_sync_dev_speed < minSpeedAllowed || _sync_dev_speed > maxSpeedAllowed) && unchanged < limit)) {
+
                 delay_ms(_poll_ms);
+
+                // Forzar lectura de potencia
+                {
+                    VFD::VFDProtocol::ModbusCommand dummy;
+                    auto parser = detail_->get_output_power(dummy);
+                    if (parser) {
+                        uint8_t fake_response[VFD::VFDProtocol::VFD_RS485_MAX_MSG_SIZE] = {0};
+                        parser(fake_response, this, detail_);
+                    }
+                }
+
                 if (_debug > 1) {
                     log_debug("Syncing speed. Requested: " << int(dev_speed) << " current:" << int(_sync_dev_speed));
                 }
-                // if (!mc_dwell(500)) {
-                //     // Something happened while we were dwelling, like a safety door.
-                //     unchanged = limit;
-                //     last      = _sync_dev_speed;
-                //     break;
-                // }
 
-                // unchanged counts the number of consecutive times that we see the same speed
                 unchanged = (_sync_dev_speed == last) ? unchanged + 1 : 0;
-                last      = _sync_dev_speed;
+                last = _sync_dev_speed;
             }
+
             _last_override_value = sys.spindle_speed_ovr;
 
             if (_debug > 1) {

@@ -21,8 +21,11 @@ namespace Spindles {
 
             response_parser initialization_sequence(int index, ModbusCommand& data, VFDSpindle* vfd) override;
             response_parser get_current_speed(ModbusCommand& data) override;
+            response_parser get_output_power(ModbusCommand& data) override;
             response_parser get_current_direction(ModbusCommand& data) override { return nullptr; };
             response_parser get_status_ok(ModbusCommand& data) override { return nullptr; }
+            
+
 
             std::string _cw_cmd;
             std::string _ccw_cmd;
@@ -31,6 +34,7 @@ namespace Spindles {
             std::string _get_min_rpm_cmd;
             std::string _get_max_rpm_cmd;
             std::string _get_rpm_cmd;
+            std::string _get_power_cmd;          
 
             bool use_delay_settings() const override { return _get_rpm_cmd.empty(); }
             bool safety_polling() const override { return false; }
@@ -39,7 +43,8 @@ namespace Spindles {
             std::string _model;  // VFD Model name
             uint32_t*   _response_data;
             uint32_t    _minRPM = 0xffffffff;
-            uint32_t    _maxRPM = 0xffffffff;
+            uint32_t    _maxRPM = 0xffffffff;  
+            uint32_t    _output_power = 0;          
 
             VFDSpindle* spindle;
 
@@ -49,7 +54,10 @@ namespace Spindles {
             void        setup_speeds(VFDSpindle* vfd);
 
         public:
-            void afterParse() override;
+            void afterParse() override;            
+            uint32_t get_output_power_value() const {
+                return _output_power;
+            }
             void group(Configuration::HandlerBase& handler) override {
                 handler.item("model", _model);
                 handler.item("min_RPM", _minRPM);
@@ -61,6 +69,7 @@ namespace Spindles {
                 handler.item("get_min_rpm_cmd", _get_min_rpm_cmd);
                 handler.item("get_max_rpm_cmd", _get_max_rpm_cmd);
                 handler.item("get_rpm_cmd", _get_rpm_cmd);
+                handler.item("get_power_cmd", _get_power_cmd);
             }
         };
 

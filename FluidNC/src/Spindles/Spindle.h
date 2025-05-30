@@ -109,7 +109,7 @@ namespace Spindles {
             handler.item("m6_macro", _m6_macro);
             handler.item("s0_with_disable", _zero_speed_with_disable);
         }
-
+        virtual uint32_t output_power() const { return 0; }
         // Virtual base classes require a virtual destructor.
         virtual ~Spindle() {}
 

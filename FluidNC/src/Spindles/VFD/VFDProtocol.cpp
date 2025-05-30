@@ -65,23 +65,30 @@ namespace Spindles {
                 if (parser == nullptr) {
                     // If we don't have a parser, the queue goes first.
                     if (xQueueReceive(vfd_cmd_queue, &action, 0)) {
-                        switch (action.action) {
+                       switch (action.action) {
                             case actionSetSpeed:
                                 if (!impl->prepareSetSpeedCommand(action.arg, next_cmd, instance)) {
-                                    // prepareSetSpeedCommand() can return false if the speed
-                                    // change is unnecessary - already at that speed.
-                                    // In that case we just discard the command.
-                                    continue;  // main loop
+                                    continue;
                                 }
                                 next_cmd.critical = action.critical;
                                 break;
+
                             case actionSetMode:
                                 if (!impl->prepareSetModeCommand(SpindleState(action.arg), next_cmd, instance)) {
-                                    continue;  // main loop
+                                    continue;
+                                }
+                                next_cmd.critical = action.critical;
+                                break;
+
+                            case actionGetPower:
+                                parser = impl->get_output_power(next_cmd);
+                                if (!parser) {
+                                    continue;
                                 }
                                 next_cmd.critical = action.critical;
                                 break;
                         }
+                        
                     } else {
                         // We do not have a parser and there is nothing in the queue, so we cycle
                         // through the set of periodic queries.
