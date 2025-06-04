@@ -11,7 +11,7 @@ void OLED::show(Layout& layout, const char* msg) {
     _oled->drawString(layout._x, layout._y, msg);
 }
 
-OLED::Layout OLED::bannerLayout128  = { 0, 0, 0, ArialMT_Plain_24, TEXT_ALIGN_CENTER };
+OLED::Layout OLED::bannerLayout128  = { 64, 20, 0, ArialMT_Plain_16, TEXT_ALIGN_CENTER };
 OLED::Layout OLED::bannerLayout64   = { 0, 0, 0, ArialMT_Plain_16, TEXT_ALIGN_CENTER };
 OLED::Layout OLED::stateLayout      = { 0, 0, 0, ArialMT_Plain_16, TEXT_ALIGN_LEFT };
 OLED::Layout OLED::tickerLayout     = { 63, 0, 128, ArialMT_Plain_10, TEXT_ALIGN_CENTER };
@@ -80,10 +80,15 @@ void OLED::init() {
     _oled->setTextAlignment(TEXT_ALIGN_LEFT);
 
     _oled->clear();
+    _oled->setTextAlignment(TEXT_ALIGN_CENTER);
+    _oled->setFont(ArialMT_Plain_16);
+    _oled->drawString(64, 24, "MillingStation ®");
+    _oled->drawLine(0, 22, 128, 22);
+    _oled->drawLine(0, 44, 128, 44);
 
-    show((_width == 128) ? bannerLayout128 : bannerLayout64, "FluidNC");
+_oled->display();
+dwell_ms(5000, DwellMode::SysSuspend);  // 
 
-    _oled->display();
 
     allChannels.registration(this);
     setReportInterval(_report_interval_ms);
@@ -95,7 +100,30 @@ Error OLED::pollLine(char* line) {
 }
 
 void OLED::show_state() {
-    show(stateLayout, _state);
+    std::string texto = _state;
+
+    if (_state.find(":") != std::string::npos) {
+        _state = _state.substr(0, _state.find(":")); 
+    }
+    if (_state == "Idle") {
+        texto = "Disponible";
+    } else if (_state == "Run") {
+        texto = "Ejecutando";
+    } else if (_state == "Alarm") {
+        texto = "¡Alarma!";
+    } else if (_state == "Hold") {
+        texto = "En pausa";
+    } else if (_state == "Door") {
+        texto = "Puerta abierta";
+    } else if (_state == "Sleep") {
+        texto = "Reposo";
+    } else if (_state == "Check") {
+        texto = "Chequeo";
+    } else if (_state == "Jog") {
+        texto = "Joystick";
+    }
+
+    show(stateLayout, texto.c_str());
 }
 
 void OLED::show_limits(bool probe, const bool* limits) {
@@ -125,15 +153,15 @@ void OLED::show_file() {
     if (_width == 128) {
         show(percentLayout128, std::to_string(pct) + '%');
 
-        _ticker += "-";
-        if (_ticker.length() >= 12) {
-            _ticker = "-";
-        }
-        show(tickerLayout, _ticker);
+        // _ticker += "-";
+        // if (_ticker.length() >= 12) {
+        //     _ticker = "-";
+        // }
+        // show(tickerLayout, _ticker);
 
         wrapped_draw_string(14, _filename, ArialMT_Plain_16);
 
-        _oled->drawProgressBar(0, 45, 120, 10, pct);
+        _oled->drawProgressBar(0, 50, 120, 10, pct);
     } else {
         show(percentLayout64, std::to_string(pct) + '%');
     }
@@ -150,8 +178,8 @@ void OLED::show_dro(const float* axes, bool isMpos, bool* limits) {
     auto n_axis = Axes::_numberAxis;
     char axisVal[20];
 
-    show(limitLabelLayout, "L");
-    show(posLabelLayout, isMpos ? "M Pos" : "W Pos");
+    show(limitLabelLayout, "Lim");
+    show(posLabelLayout, isMpos ? "M. Pos:" : "P. Pos:");
 
     _oled->setFont(ArialMT_Plain_10);
     uint8_t oled_y_pos;
@@ -164,7 +192,7 @@ void OLED::show_dro(const float* axes, bool isMpos, bool* limits) {
         } else {
             // For small displays there isn't room for separate limit boxes
             // so we put it after the label
-            axis_msg += limits[axis] ? "L" : ":";
+            axis_msg += limits[axis] ? "Lim" : ":";
         }
         _oled->setTextAlignment(TEXT_ALIGN_LEFT);
         _oled->drawString(0, oled_y_pos, axis_msg.c_str());
@@ -345,17 +373,32 @@ void OLED::parse_status_report() {
         if (tag == "SD") {
             auto commaPos = value.find_first_of(",");
             _percent      = std::strtof(value.substr(0, commaPos).c_str(), nullptr);
-            _filename     = value.substr(commaPos + 1);
+
+            std::string full_path = value.substr(commaPos + 1);
+            size_t lastSlash = full_path.find_last_of("/\\");  // Buscar el último / o \ en la ruta
+
+            if (lastSlash != std::string::npos) {
+                _filename = full_path.substr(lastSlash + 1);  // Extraer solo el nombre del archivo
+            } else {
+                _filename = full_path;  // Si no hay / ni \, usar el valor completo
+            }
+            
             continue;
         }
     }
     _oled->clear();
+
+if (_state == "Alarm") {
+    show_state();
+} else {
     show_state();
     show_file();
     show_limits(probe, limits);
     show_dro(axes, isMpos, limits);
     show_radio_info();
-    _oled->display();
+}
+
+_oled->display();
 }
 
 void OLED::parse_gcode_report() {
@@ -420,7 +463,7 @@ void OLED::parse_AP() {
     size_t ip_end   = _report.rfind(" mask ");
     size_t ip_start = ssid_end + strlen(" IP ");
 
-    _radio_info = "AP: ";
+    _radio_info = "P. de acceso: ";
     _radio_info += _report.substr(start, ssid_end - start);
     _radio_addr = _report.substr(ip_start, ip_end - ip_start);
 
@@ -450,7 +493,7 @@ void OLED::parse_WebUI() {
 
     _oled->clear();
     auto fh = font_height(ArialMT_Plain_10);
-    wrapped_draw_string(0, "WebUI from", ArialMT_Plain_10);
+    wrapped_draw_string(0, "WebUI desde", ArialMT_Plain_10);
     wrapped_draw_string(fh * 2, ipaddr, ArialMT_Plain_10);
     _oled->display();
 }

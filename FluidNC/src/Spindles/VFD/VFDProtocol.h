@@ -24,7 +24,8 @@ namespace Spindles {
             };
             virtual void group(Configuration::HandlerBase& handler) {};
             virtual void afterParse() {};
-            virtual uint32_t get_output_power_value() const { return 0; }        
+            virtual uint32_t get_output_power_value() const { return 0; }   
+            virtual uint32_t get_drive_status_value() const { return 0; }     
 
 
         protected:

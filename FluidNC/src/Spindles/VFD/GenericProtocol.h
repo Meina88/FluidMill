@@ -24,6 +24,7 @@ namespace Spindles {
             response_parser get_output_power(ModbusCommand& data) override;
             response_parser get_current_direction(ModbusCommand& data) override { return nullptr; };
             response_parser get_status_ok(ModbusCommand& data) override { return nullptr; }
+            response_parser get_status(ModbusCommand& data);
             
 
 
@@ -34,8 +35,9 @@ namespace Spindles {
             std::string _get_min_rpm_cmd;
             std::string _get_max_rpm_cmd;
             std::string _get_rpm_cmd;
-            std::string _get_power_cmd;          
-
+            std::string _get_power_cmd;      
+            std::string _get_status_cmd;
+    
             bool use_delay_settings() const override { return _get_rpm_cmd.empty(); }
             bool safety_polling() const override { return false; }
 
@@ -44,7 +46,9 @@ namespace Spindles {
             uint32_t*   _response_data;
             uint32_t    _minRPM = 0xffffffff;
             uint32_t    _maxRPM = 0xffffffff;  
-            uint32_t    _output_power = 0;          
+            uint32_t    _output_power = 0;
+            uint32_t    _drive_status = 0;    
+                  
 
             VFDSpindle* spindle;
 
@@ -58,6 +62,9 @@ namespace Spindles {
             uint32_t get_output_power_value() const {
                 return _output_power;
             }
+            uint32_t get_drive_status_value() const {
+                return _drive_status;
+            }
             void group(Configuration::HandlerBase& handler) override {
                 handler.item("model", _model);
                 handler.item("min_RPM", _minRPM);
@@ -70,6 +77,7 @@ namespace Spindles {
                 handler.item("get_max_rpm_cmd", _get_max_rpm_cmd);
                 handler.item("get_rpm_cmd", _get_rpm_cmd);
                 handler.item("get_power_cmd", _get_power_cmd);
+                handler.item("get_status_cmd", _get_status_cmd);
             }
         };
 

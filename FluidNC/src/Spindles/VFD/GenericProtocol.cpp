@@ -82,9 +82,19 @@ namespace Spindles {
                 // Sync must be in a temporary because it's volatile!
                 uint32_t sync = spindle->_sync_dev_speed;
                 if (set_data(token, response_view, "rpm", sync)) {
-                    spindle->_sync_dev_speed = sync;
+                    static uint32_t last_good_speed = 0;  // Recordamos el último valor válido
+
+                    // Filtro: si la lectura es válida, la actualizamos
+                    if (sync != 0xFFFF && sync != 0xFFFFFFFF && sync <= 65535) {
+                        last_good_speed = sync;
+                        spindle->_sync_dev_speed = sync;
+                    } else {
+                        // Si es inválida, mantenemos el último valor bueno
+                        spindle->_sync_dev_speed = last_good_speed;
+                    }
                     continue;
                 }
+
                 uint32_t ignore;
                 if (set_data(token, response_view, "ignore", ignore)) {
                     continue;
@@ -98,10 +108,29 @@ namespace Spindles {
                     continue;
                 }
 
-                if (set_data(token, response_view, "power", instance->_output_power)) {                    
+                if (set_data(token, response_view, "power", instance->_output_power)) {    
+                    static uint32_t last_good_power = 0;  // Recordamos el último valor válido
+                        // Si es un valor válido, lo aceptamos y actualizamos last_good_power
+                        if (instance->_output_power <= 2200) {
+                            last_good_power = instance->_output_power;
+                        } else {
+                            // Si es inválido, NO lo actualizamos → dejamos el último valor bueno
+                            instance->_output_power = last_good_power;
+                        }
                     log_debug(spindle->name() << ": got power " << instance->_output_power);
                     continue;
                     }
+
+                if (set_data(token, response_view, "status", instance->_drive_status)) {
+                    static uint32_t last_good_status = 0;
+                    if (instance->_drive_status <= 0xFFFF) {  // Status siempre es uint16
+                        last_good_status = instance->_drive_status;
+                    } else {
+                        instance->_drive_status = last_good_status;
+                    }
+                    log_debug(spindle->name() << ": got status " << to_hex(instance->_drive_status));
+                    continue;
+                }    
 
                 if (string_util::from_hex(token, val)) {
                     if (val != response_view[0]) {
@@ -205,6 +234,16 @@ namespace Spindles {
                 return instance->parser(response, spindle, instance);
             };
         }
+
+        VFDProtocol::response_parser GenericProtocol::get_status(ModbusCommand& data) {
+            send_vfd_command(_get_status_cmd, data, 0);
+            return [](const uint8_t* response, VFDSpindle* spindle, VFDProtocol* protocol) -> bool {
+                auto instance = static_cast<GenericProtocol*>(protocol);
+                return instance->parser(response, spindle, instance);
+            };
+        }
+
+
         VFDProtocol::response_parser GenericProtocol::initialization_sequence(int index, ModbusCommand& data, VFDSpindle* vfd) {
             // BUG:
             //
@@ -250,6 +289,8 @@ namespace Spindles {
             const char* get_min_rpm_cmd;
             const char* get_max_rpm_cmd;
             const char* get_power_cmd;                      //Nuevo campo
+            const char* get_status_cmd;
+
         } VFDtypes[] = {
             {
                 "DeltaMS300",
@@ -263,6 +304,7 @@ namespace Spindles {
                 "03 21 1A 00 01 > 03 02 minrpm",             // get_min_rpm_cmd
                 "03 21 1B 00 01 > 03 02 maxrpm",             // get_max_rpm_cmd
                 "03 21 0F 00 01 > 03 02 power*100",          // get_power_cmd lee la potencia del VFD
+                "03 21 01 00 01 > 03 02 status",
             },
         };
         void GenericProtocol::afterParse() {
@@ -292,6 +334,9 @@ namespace Spindles {
                     }
                      if (_get_power_cmd.empty()) {
                         _get_power_cmd = vfd.get_power_cmd;
+                    }
+                     if (_get_status_cmd.empty()) {
+                        _get_status_cmd = vfd.get_status_cmd;
                     }
                     return;
                 }

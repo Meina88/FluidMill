@@ -146,7 +146,37 @@ namespace Spindles {
 
                 delay_ms(_poll_ms);
 
-                // Forzar lectura de potencia
+                // Leer el drive status
+                uint32_t drive_status = detail_->get_drive_status_value();
+
+                // Ver si está en RUN estable (bits 0-1 == 0b11 → RUN)
+                bool in_run = (drive_status & 0b11) == 0b11;
+
+                if (!in_run) {
+                    if (_debug > 1) {
+                        log_debug("VFD in RAMP, skipping speed check. DriveStatus: " << to_hex(drive_status));
+                    }
+                    unchanged = 0;  // No contar como "sin cambio"
+                    
+                    // Forzar lectura de potencia (mantenemos tu código aquí)
+                    {
+                        VFD::VFDProtocol::ModbusCommand dummy;
+                        auto parser = detail_->get_output_power(dummy);
+                        if (parser) {
+                            uint8_t fake_response[VFD::VFDProtocol::VFD_RS485_MAX_MSG_SIZE] = {0};
+                            parser(fake_response, this, detail_);
+                        }
+                    }
+
+                    continue;  // Volver a esperar
+                }
+
+                // Si estamos en RUN estable, chequear normalmente
+                if (_debug > 1) {
+                    log_debug("Syncing speed. Requested: " << int(dev_speed) << " current:" << int(_sync_dev_speed));
+                }
+
+                // Forzar lectura de potencia (mantenemos también cuando estamos en RUN)
                 {
                     VFD::VFDProtocol::ModbusCommand dummy;
                     auto parser = detail_->get_output_power(dummy);
@@ -156,13 +186,10 @@ namespace Spindles {
                     }
                 }
 
-                if (_debug > 1) {
-                    log_debug("Syncing speed. Requested: " << int(dev_speed) << " current:" << int(_sync_dev_speed));
-                }
-
                 unchanged = (_sync_dev_speed == last) ? unchanged + 1 : 0;
                 last = _sync_dev_speed;
             }
+
 
             _last_override_value = sys.spindle_speed_ovr;
 
