@@ -114,7 +114,7 @@ void OLED::show_state() {
     } else if (_state == "Hold") {
         texto = "En pausa";
     } else if (_state == "Door") {
-        texto = "Puerta abierta";
+        texto = "Pausa segura";
     } else if (_state == "Sleep") {
         texto = "Reposo";
     } else if (_state == "Check") {
