@@ -82,15 +82,13 @@ namespace Spindles {
                 // Sync must be in a temporary because it's volatile!
                 uint32_t sync = spindle->_sync_dev_speed;
                 if (set_data(token, response_view, "rpm", sync)) {
-                    static uint32_t last_good_speed = 0;  // Recordamos el último valor válido
-
                     // Filtro: si la lectura es válida, la actualizamos
                     if (sync != 0xFFFF && sync != 0xFFFFFFFF && sync <= 65535) {
-                        last_good_speed = sync;
-                        spindle->_sync_dev_speed = sync;
+                        instance->_last_good_speed = sync;
+                        spindle->_sync_dev_speed   = sync;
                     } else {
                         // Si es inválida, mantenemos el último valor bueno
-                        spindle->_sync_dev_speed = last_good_speed;
+                        spindle->_sync_dev_speed = instance->_last_good_speed;
                     }
                     continue;
                 }
@@ -108,29 +106,27 @@ namespace Spindles {
                     continue;
                 }
 
-                if (set_data(token, response_view, "power", instance->_output_power)) {    
-                    static uint32_t last_good_power = 0;  // Recordamos el último valor válido
-                        // Si es un valor válido, lo aceptamos y actualizamos last_good_power
-                        if (instance->_output_power <= 2200) {
-                            last_good_power = instance->_output_power;
-                        } else {
-                            // Si es inválido, NO lo actualizamos → dejamos el último valor bueno
-                            instance->_output_power = last_good_power;
-                        }
+                if (set_data(token, response_view, "power", instance->_output_power)) {
+                    // Si es un valor válido, lo aceptamos y actualizamos _last_good_power
+                    if (instance->_output_power <= 2200) {
+                        instance->_last_good_power = instance->_output_power;
+                    } else {
+                        // Si es inválido, NO lo actualizamos → dejamos el último valor bueno
+                        instance->_output_power = instance->_last_good_power;
+                    }
                     log_debug(spindle->name() << ": got power " << instance->_output_power);
                     continue;
-                    }
+                }
 
                 if (set_data(token, response_view, "status", instance->_drive_status)) {
-                    static uint32_t last_good_status = 0;
                     if (instance->_drive_status <= 0xFFFF) {  // Status siempre es uint16
-                        last_good_status = instance->_drive_status;
+                        instance->_last_good_status = instance->_drive_status;
                     } else {
-                        instance->_drive_status = last_good_status;
+                        instance->_drive_status = instance->_last_good_status;
                     }
                     log_debug(spindle->name() << ": got status " << to_hex(instance->_drive_status));
                     continue;
-                }    
+                }
 
                 if (string_util::from_hex(token, val)) {
                     if (val != response_view[0]) {
@@ -228,14 +224,23 @@ namespace Spindles {
         }
 
         VFDProtocol::response_parser GenericProtocol::get_output_power(ModbusCommand& data) {
-            send_vfd_command(_get_power_cmd, data, 0);  // esta es tu cadena tipo "03 21 1B 00 01 > 03 02"
+            if (_get_power_cmd.empty()) {
+                return nullptr;
+            }
+            send_vfd_command(_get_power_cmd, data, 0);
             return [](const uint8_t* response, VFDSpindle* spindle, VFDProtocol* protocol) -> bool {
                 auto instance = static_cast<GenericProtocol*>(protocol);
                 return instance->parser(response, spindle, instance);
             };
         }
 
+        // Not currently invoked from anywhere in the polling/dispatch code (see VFDProtocol.cpp) -
+        // _drive_status stays at its default (0) unless something starts calling this. Available for
+        // future use (e.g. surfacing drive status in the status report or the OLED).
         VFDProtocol::response_parser GenericProtocol::get_status(ModbusCommand& data) {
+            if (_get_status_cmd.empty()) {
+                return nullptr;
+            }
             send_vfd_command(_get_status_cmd, data, 0);
             return [](const uint8_t* response, VFDSpindle* spindle, VFDProtocol* protocol) -> bool {
                 auto instance = static_cast<GenericProtocol*>(protocol);
@@ -299,12 +304,41 @@ namespace Spindles {
                 "06 20 00 00 12 > echo",                     // cw_cmd: RUN + FWD
                 "06 20 00 00 22 > echo",                     // ccw_cmd: RUN + REV
                 "06 20 00 00 01 > echo",                     // off_cmd: STOP
-                "06 20 01 rpm*50/60 > echo",                 // set_rpm_cmd
-                "03 21 03 00 01 > 03 02 rpm*60/100",         // get_rpm_cmd
-                "03 21 1A 00 01 > 03 02 minrpm",             // get_min_rpm_cmd
-                "03 21 1B 00 01 > 03 02 maxrpm",             // get_max_rpm_cmd
+                "06 20 01 rpm*50/60 > echo",                 // set_rpm_cmd: raw = RPM * 50/60. Empirically
+                                                              // confirmed on hardware: commanding S11000
+                                                              // spins the spindle at 11000 RPM with this
+                                                              // factor. (An earlier "fix" here to *100/60,
+                                                              // based on the documented Hz*100 register
+                                                              // format and an assumed 2-pole 60 RPM/Hz
+                                                              // ratio, was WRONG - it made the spindle spin
+                                                              // at 2x the requested speed. Whatever the real
+                                                              // RPM<->Hz relationship is for this particular
+                                                              // motor/VFD/mechanical setup - a pulley ratio
+                                                              // is one plausible explanation - it is not the
+                                                              // textbook 60 RPM/Hz; empirically it behaves as
+                                                              // if raw = RPM * 100/120, i.e. *50/60. Trust
+                                                              // this constant only from a real speed
+                                                              // measurement on this exact hardware, not from
+                                                              // the register documentation alone.)
+                "03 21 03 00 01 > 03 02 rpm*6/5",            // get_rpm_cmd: the exact inverse of set_rpm_cmd
+                                                              // above (raw*6/5 undoes raw=RPM*50/60), so that
+                                                              // _sync_dev_speed ends up in the same "RPM"
+                                                              // units as the dev_speed setState() waits for.
+                                                              // This used to be *60/100, which under-reported
+                                                              // the real speed by half and made setState()'s
+                                                              // wait loop unable to ever converge (see
+                                                              // VFDSpindle.cpp) - this is the real root cause
+                                                              // of the sync hangs, not the drive-status gate
+                                                              // that was removed from setState() earlier.
+                "",                                           // get_min_rpm_cmd: not auto-queried; register
+                                                              // 211AH isn't in the MS300's documented status
+                                                              // map and min_rpm is always set via YAML anyway
+                                                              // (matches upstream bdring/FluidNC's DeltaMS300)
+                "",                                           // get_max_rpm_cmd: same reasoning; max_rpm is
+                                                              // always set via YAML
                 "03 21 0F 00 01 > 03 02 power*100",          // get_power_cmd lee la potencia del VFD
-                "03 21 01 00 01 > 03 02 status",
+                "03 21 01 00 01 > 03 02 status",              // available but not currently polled anywhere
+                                                              // (see get_status()/get_drive_status_value())
             },
         };
         void GenericProtocol::afterParse() {

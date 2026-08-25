@@ -67,7 +67,8 @@ namespace Spindles {
 
         // Initialization is complete, so now it's okay to run the queue task:
         if (!VFD::VFDProtocol::vfd_cmd_queue) {  // init can happen many times, we only want to start one task
-            VFD::VFDProtocol::vfd_cmd_queue = xQueueCreate(VFD_RS485_QUEUE_SIZE, sizeof(VFD::VFDProtocol::VFDaction));
+            VFD::VFDProtocol::vfd_cmd_queue   = xQueueCreate(VFD_RS485_QUEUE_SIZE, sizeof(VFD::VFDProtocol::VFDaction));
+            VFD::VFDProtocol::vfd_speed_queue = xQueueCreate(VFD_RS485_QUEUE_SIZE, sizeof(uint32_t));
             xTaskCreatePinnedToCore(VFD::VFDProtocol::vfd_cmd_task,  // task
                                     "vfd_cmdTaskHandle",             // name for task
                                     2048,                            // size of task stack
@@ -128,68 +129,50 @@ namespace Spindles {
         if (detail_->use_delay_settings()) {
             spindleDelay(state, speed);
         } else {
-            // _sync_dev_speed is set by a callback that handles
-            // responses from periodic get_current_speed() requests.
-            // It changes as the actual speed ramps toward the target.
+            // _sync_dev_speed is fed by VFDProtocol's RS485 task, which pushes each real
+            // speed reading it parses onto vfd_speed_queue (see VFDProtocol.cpp). We block
+            // on that queue with a hard timeout instead of polling _sync_dev_speed in a
+            // loop with a soft "unchanged" counter - the old counter-based timeout could be
+            // (and was) silently defeated by anything that forced a `continue` every
+            // iteration, leaving no way to ever detect a spindle that never reaches speed.
 
             _syncing = true;  // poll for speed
 
             auto minSpeedAllowed = dev_speed > _slop ? (dev_speed - _slop) : 0;
             auto maxSpeedAllowed = dev_speed + _slop;
 
-            int       unchanged = 0;
-            const int limit     = 20;  // 20 * 0.5s = 10 sec
-            auto      last      = _sync_dev_speed;
-
-            while ((_last_override_value == sys.spindle_speed_ovr) &&
-                ((_sync_dev_speed < minSpeedAllowed || _sync_dev_speed > maxSpeedAllowed) && unchanged < limit)) {
-
-                delay_ms(_poll_ms);
-
-                // Leer el drive status
-                uint32_t drive_status = detail_->get_drive_status_value();
-
-                // Ver si está en RUN estable (bits 0-1 == 0b11 → RUN)
-                bool in_run = (drive_status & 0b11) == 0b11;
-
-                if (!in_run) {
-                    if (_debug > 1) {
-                        log_debug("VFD in RAMP, skipping speed check. DriveStatus: " << to_hex(drive_status));
-                    }
-                    unchanged = 0;  // No contar como "sin cambio"
-                    
-                    // Forzar lectura de potencia (mantenemos tu código aquí)
-                    {
-                        VFD::VFDProtocol::ModbusCommand dummy;
-                        auto parser = detail_->get_output_power(dummy);
-                        if (parser) {
-                            uint8_t fake_response[VFD::VFDProtocol::VFD_RS485_MAX_MSG_SIZE] = {0};
-                            parser(fake_response, this, detail_);
-                        }
-                    }
-
-                    continue;  // Volver a esperar
-                }
-
-                // Si estamos en RUN estable, chequear normalmente
-                if (_debug > 1) {
-                    log_debug("Syncing speed. Requested: " << int(dev_speed) << " current:" << int(_sync_dev_speed));
-                }
-
-                // Forzar lectura de potencia (mantenemos también cuando estamos en RUN)
-                {
-                    VFD::VFDProtocol::ModbusCommand dummy;
-                    auto parser = detail_->get_output_power(dummy);
-                    if (parser) {
-                        uint8_t fake_response[VFD::VFDProtocol::VFD_RS485_MAX_MSG_SIZE] = {0};
-                        parser(fake_response, this, detail_);
-                    }
-                }
-
-                unchanged = (_sync_dev_speed == last) ? unchanged + 1 : 0;
-                last = _sync_dev_speed;
+            if (_debug > 1) {
+                log_debug("Syncing speed. Requested: " << int(dev_speed) << " current:" << int(_sync_dev_speed));
             }
 
+            uint32_t   prev_sync_speed   = _sync_dev_speed;
+            TickType_t last_change_ticks = xTaskGetTickCount();
+
+            while ((_last_override_value == sys.spindle_speed_ovr) &&
+                   (_sync_dev_speed < minSpeedAllowed || _sync_dev_speed > maxSpeedAllowed)) {
+                if (sys.abort) {
+                    _syncing = false;
+                    return;
+                }
+                if (!xQueueReceive(VFD::VFDProtocol::vfd_speed_queue, &_sync_dev_speed, pdMS_TO_TICKS(3000))) {
+                    // No speed reading arrived within 3s: the VFD never reported reaching the
+                    // requested speed (unresponsive, alarmed, or genuinely can't get there).
+                    // This is the safety net that used to be silently disabled - restore it.
+                    mc_critical(ExecAlarm::SpindleControl);
+                    log_error(name() << ": spindle did not reach device units " << dev_speed << ". Reported value is "
+                                      << _sync_dev_speed);
+                    _syncing = false;
+                    return;
+                }
+                if (_sync_dev_speed == prev_sync_speed) {
+                    if ((xTaskGetTickCount() - last_change_ticks) >= pdMS_TO_TICKS(3000)) {
+                        break;  // speed reported unchanged for 3s straight; give up waiting
+                    }
+                } else {
+                    last_change_ticks = xTaskGetTickCount();
+                    prev_sync_speed   = _sync_dev_speed;
+                }
+            }
 
             _last_override_value = sys.spindle_speed_ovr;
 
@@ -197,17 +180,11 @@ namespace Spindles {
                 log_debug("Synced speed. Requested:" << int(dev_speed) << " current:" << int(_sync_dev_speed));
             }
 
-            if (unchanged == limit) {
-                mc_critical(ExecAlarm::SpindleControl);
-                log_error(name() << ": spindle did not reach device units " << dev_speed << ". Reported value is " << _sync_dev_speed);
-            }
-
             _syncing = false;
             // spindleDelay() sets these when it is used
             _current_state = state;
             _current_speed = speed;
         }
-        //        }
     }
 
     void IRAM_ATTR VFDSpindle::setSpeedfromISR(uint32_t dev_speed) {

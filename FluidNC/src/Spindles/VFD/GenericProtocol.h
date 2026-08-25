@@ -11,6 +11,16 @@ namespace Spindles {
 
     namespace VFD {
         class GenericProtocol : public VFDProtocol, Configuration::Configurable {
+        public:
+            // model defaults to "" (config-driven via the `model:` YAML key); a subclass
+            // (e.g. DeltaMS300) can pass its name directly so afterParse() picks up its
+            // defaults from VFDtypes[] without needing a `model:` key in the YAML.
+            GenericProtocol(const char* model = nullptr) {
+                if (model) {
+                    _model = model;
+                }
+            }
+
         private:
             void scale(uint32_t& n, std::string_view scale_str, uint32_t maxRPM);
             bool set_data(std::string_view token, std::basic_string_view<uint8_t>& response_view, const char* name, uint32_t& data);
@@ -45,10 +55,17 @@ namespace Spindles {
             std::string _model;  // VFD Model name
             uint32_t*   _response_data;
             uint32_t    _minRPM = 0xffffffff;
-            uint32_t    _maxRPM = 0xffffffff;  
+            uint32_t    _maxRPM = 0xffffffff;
             uint32_t    _output_power = 0;
-            uint32_t    _drive_status = 0;    
-                  
+            uint32_t    _drive_status = 0;
+
+            // "Last known good" fallback values used by parser() when a reading looks
+            // implausible (garbled frame that still passed the CRC check). Per-instance
+            // on purpose, so that two VFDs of this type running concurrently don't share
+            // state with each other.
+            uint32_t _last_good_speed  = 0;
+            uint32_t _last_good_power  = 0;
+            uint32_t _last_good_status = 0;
 
             VFDSpindle* spindle;
 

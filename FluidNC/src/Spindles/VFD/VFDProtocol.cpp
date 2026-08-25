@@ -14,6 +14,7 @@ namespace Spindles {
         const TickType_t response_ticks     = RESPONSE_WAIT_MS / portTICK_PERIOD_MS;  // in milliseconds between commands
 
         QueueHandle_t VFDProtocol::vfd_cmd_queue     = nullptr;
+        QueueHandle_t VFDProtocol::vfd_speed_queue   = nullptr;
         TaskHandle_t  VFDProtocol::vfd_cmdTaskHandle = nullptr;
 
         void VFDProtocol::reportParsingErrors(ModbusCommand cmd, uint8_t* rx_message, size_t read_length) {
@@ -123,36 +124,21 @@ namespace Spindles {
                                     break;
                             }
                         }
-                            static uint32_t last_power_poll = 0;
-                                    uint32_t now = esp_timer_get_time() / 1000;
-                                    if (now - last_power_poll > 500) {  // cada 500 ms
-                                        last_power_poll = now;
 
-                                        VFD::VFDProtocol::ModbusCommand power_cmd;
-                                        auto power_parser = impl->get_output_power(power_cmd);
-                                        if (power_parser) {
-                                            power_cmd.msg[0] = instance->_modbus_id;
-                                            auto crc16 = VFD::VFDProtocol::ModRTU_CRC(power_cmd.msg, power_cmd.tx_length);
-                                            power_cmd.msg[power_cmd.tx_length++] = (crc16 & 0xFF);
-                                            power_cmd.msg[power_cmd.tx_length++] = (crc16 & 0xFF00) >> 8;
-                                            power_cmd.rx_length += 2;
-
-                                            uart.flush();
-                                            uart.write(power_cmd.msg, power_cmd.tx_length);
-                                            uart.flushTxTimed(response_ticks);
-
-                                            uint8_t rx_message[VFD::VFDProtocol::VFD_RS485_MAX_MSG_SIZE];
-                                            size_t read_length = uart.timedReadBytes(rx_message, power_cmd.rx_length, response_ticks);
-
-                                            if (read_length == power_cmd.rx_length && rx_message[0] == instance->_modbus_id) {
-                                                // Parse response → ACTUALIZA _output_power
-                                                power_parser(rx_message, instance, impl);
-                                            } else {
-                                                // opcional → log_debug("Failed power poll read");
-                                            }
-                                        }
-                                    }
-
+                        // Periodically poll output power, independent of the safety-polling cycle above,
+                        // by asking for the same 'parser' that actionGetPower would produce. This goes
+                        // through the normal transaction pipeline below (retries, response CRC check,
+                        // unresponsive/mc_critical handling) instead of hand-rolling a second UART
+                        // transaction here.
+                        if (parser == nullptr) {
+                            static uint32_t last_power_poll        = 0;
+                            const uint32_t  POWER_POLL_INTERVAL_MS = 500;
+                            uint32_t        now                    = esp_timer_get_time() / 1000;
+                            if (now - last_power_poll >= POWER_POLL_INTERVAL_MS) {
+                                last_power_poll = now;
+                                parser          = impl->get_output_power(next_cmd);
+                            }
+                        }
 
                         // If we have no parser, that means get_status_ok is not implemented (and we have
                         // nothing resting in our queue). Let's fall back on a simple continue.
@@ -227,6 +213,14 @@ namespace Spindles {
                                 if (pollidx < 0) {
                                     --pollidx;
                                 }
+                                // Relay the (possibly just-updated) speed reading to whoever is waiting
+                                // for it in VFDSpindle::setState(). Harmless no-op if nobody is waiting
+                                // (queue just fills up to VFD_RS485_QUEUE_SIZE and further sends are
+                                // dropped), and harmless if this particular response didn't touch
+                                // _sync_dev_speed (the waiter just sees the same value again).
+                                if (vfd_speed_queue) {
+                                    xQueueSend(vfd_speed_queue, &instance->_sync_dev_speed, 0);
+                                }
                             } else {
                                 // Parsing failed
                                 if (instance->_debug) {
@@ -294,6 +288,12 @@ namespace Spindles {
             // Sometimes sync_dev_speed is retained between different set_speed_command's. We don't want that - we want
             // spindle sync to kick in after we set the speed. This forces that.
             spindle->_sync_dev_speed = UINT32_MAX;
+
+            // Drop any stale speed readings queued from before this new setpoint, so setState()'s wait
+            // loop doesn't consume leftover values that predate the command we just issued.
+            if (vfd_speed_queue) {
+                xQueueReset(vfd_speed_queue);
+            }
 
             return true;
         }

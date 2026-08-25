@@ -66,6 +66,9 @@ namespace Spindles {
             // no de-init. Oh well...
 
             static QueueHandle_t vfd_cmd_queue;
+            static QueueHandle_t vfd_speed_queue;  // filled by the RS485 task with each real speed reading;
+                                                     // setState() blocks on this with a hard timeout instead
+                                                     // of polling _sync_dev_speed in a loop.
             static TaskHandle_t  vfd_cmdTaskHandle;
             static void          vfd_cmd_task(void* pvParameters);
 
