@@ -24,8 +24,12 @@ namespace Spindles {
             };
             virtual void group(Configuration::HandlerBase& handler) {};
             virtual void afterParse() {};
-            virtual uint32_t get_output_power_value() const { return 0; }   
-            virtual uint32_t get_drive_status_value() const { return 0; }     
+            virtual uint32_t get_output_power_value() const { return 0; }
+            virtual uint32_t get_drive_status_value() const { return 0; }
+            // Last genuinely-measured speed reading, independent of whatever internal
+            // sentinel a subclass's sync-wait bookkeeping (e.g. VFDSpindle::_sync_dev_speed)
+            // might be holding at the moment - see GenericProtocol's override.
+            virtual uint32_t get_current_speed_value() const { return 0; }
 
 
         protected:
@@ -49,12 +53,28 @@ namespace Spindles {
         private:
             friend class Spindles::VFDSpindle;  // For ISR related things.
 
-            enum VFDactionType : uint8_t { actionSetSpeed, actionSetMode, actionGetPower };
+            enum VFDactionType : uint8_t { actionSetMode, actionGetPower };
 
             struct VFDaction {
                 VFDactionType action;
                 bool          critical;
                 uint32_t      arg;
+            };
+
+            // Speed setpoints are "latest wins", not FIFO: a burst of speed changes (rapid
+            // spindle-speed overrides, or fast changes during motion) should collapse to a
+            // single Modbus write of the final target, not one write per intermediate value
+            // - ten override nudges used to mean ten serialized RS485 transactions, each
+            // with its own retry/timeout budget, which is what made a handful of quick
+            // presses take many seconds to fully land (and risked overflowing a FIFO queue
+            // and dropping the tail end). A depth-1 queue with xQueueOverwrite()/
+            // xQueueOverwriteFromISR() gives exactly that: each new setpoint replaces
+            // whatever hadn't been sent yet instead of queuing behind it. Mode changes
+            // (start/stop/direction) stay on vfd_cmd_queue, a real FIFO, since those must
+            // never be dropped, coalesced, or reordered.
+            struct VFDSpeedSetpoint {
+                bool     critical;
+                uint32_t arg;
             };
 
             // Careful observers will notice that these *shouldn't* be static, but they are. The reason is
@@ -66,6 +86,7 @@ namespace Spindles {
             // no de-init. Oh well...
 
             static QueueHandle_t vfd_cmd_queue;
+            static QueueHandle_t vfd_speed_setpoint_queue;  // depth 1, "latest wins" - see VFDSpeedSetpoint above.
             static QueueHandle_t vfd_speed_queue;  // filled by the RS485 task with each real speed reading;
                                                      // setState() blocks on this with a hard timeout instead
                                                      // of polling _sync_dev_speed in a loop.

@@ -78,7 +78,9 @@ namespace Spindles {
                     }
 
                     vfd->setupSpeeds(maxRPM);  // The speed is given directly in RPM
-                    vfd->_slop = 300;          // 300 RPM
+                    if (vfd->_slop == 0) {     // not already set via YAML `slop_rpm:`
+                        vfd->_slop = 300;       // 300 RPM
+                    }
 
                     static_cast<H2AProtocol*>(detail)->_maxRPM = uint32_t(maxRPM);
 

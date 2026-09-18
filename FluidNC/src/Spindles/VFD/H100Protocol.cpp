@@ -143,7 +143,9 @@ namespace Spindles {
                 vfd->shelfSpeeds(minRPM, maxRPM);
             }
             vfd->setupSpeeds(_maxFrequency);
-            vfd->_slop = std::max(_maxFrequency / 40, 1);
+            if (vfd->_slop == 0) {  // not already set via YAML `slop_rpm:`
+                vfd->_slop = std::max(_maxFrequency / 40, 1);
+            }
 
             log_info("VFD: VFD settings read: Freq range(" << _minFrequency << " , " << _maxFrequency << ")]");
         }

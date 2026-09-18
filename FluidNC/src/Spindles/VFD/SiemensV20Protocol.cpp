@@ -202,7 +202,9 @@ namespace Spindles {
                     vfd->shelfSpeeds(minRPM, maxRPM);
                 }
                 vfd->setupSpeeds(siemens->_maxFrequency);
-                vfd->_slop = std::max(siemens->_maxFrequency / 40, 1);
+                if (vfd->_slop == 0) {  // not already set via YAML `slop_rpm:`
+                    vfd->_slop = std::max(siemens->_maxFrequency / 40, 1);
+                }
                 return true;
             };
         }

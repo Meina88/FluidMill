@@ -166,7 +166,9 @@ namespace Spindles {
                     }
 
                     vfd->setupSpeeds(yl620->_maxFrequency);
-                    vfd->_slop = std::max(int(yl620->_maxFrequency) / 40, 1);
+                    if (vfd->_slop == 0) {  // not already set via YAML `slop_rpm:`
+                        vfd->_slop = std::max(int(yl620->_maxFrequency) / 40, 1);
+                    }
 
                     //                vfd->_min_rpm = uint32_t(vfd->_max_rpm) * uint32_t(yl620->_minFrequency) /
                     //                                uint32_t(yl620->_maxFrequency);  //   1000 * 24000 / 4000 =   6000 RPM.

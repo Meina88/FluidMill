@@ -67,8 +67,10 @@ namespace Spindles {
 
         // Initialization is complete, so now it's okay to run the queue task:
         if (!VFD::VFDProtocol::vfd_cmd_queue) {  // init can happen many times, we only want to start one task
-            VFD::VFDProtocol::vfd_cmd_queue   = xQueueCreate(VFD_RS485_QUEUE_SIZE, sizeof(VFD::VFDProtocol::VFDaction));
-            VFD::VFDProtocol::vfd_speed_queue = xQueueCreate(VFD_RS485_QUEUE_SIZE, sizeof(uint32_t));
+            VFD::VFDProtocol::vfd_cmd_queue = xQueueCreate(VFD_RS485_QUEUE_SIZE, sizeof(VFD::VFDProtocol::VFDaction));
+            // Depth 1: "latest wins" for speed setpoints - see VFDSpeedSetpoint in VFDProtocol.h.
+            VFD::VFDProtocol::vfd_speed_setpoint_queue = xQueueCreate(1, sizeof(VFD::VFDProtocol::VFDSpeedSetpoint));
+            VFD::VFDProtocol::vfd_speed_queue          = xQueueCreate(VFD_RS485_QUEUE_SIZE, sizeof(uint32_t));
             xTaskCreatePinnedToCore(VFD::VFDProtocol::vfd_cmd_task,  // task
                                     "vfd_cmdTaskHandle",             // name for task
                                     2048,                            // size of task stack
@@ -138,8 +140,14 @@ namespace Spindles {
 
             _syncing = true;  // poll for speed
 
-            auto minSpeedAllowed = dev_speed > _slop ? (dev_speed - _slop) : 0;
-            auto maxSpeedAllowed = dev_speed + _slop;
+            // Whichever tolerance is wider wins: a fixed RPM floor (_slop) so low speeds
+            // still get a sane minimum window, or a percentage of the target (useful
+            // under cutting load, where motor slip can keep the real RPM a fair way off
+            // target indefinitely - see slop_percent in VFDSpindle.h).
+            uint32_t percentSlop   = uint32_t(uint64_t(dev_speed) * _slop_percent / 100);
+            uint32_t effectiveSlop = percentSlop > _slop ? percentSlop : _slop;
+            auto     minSpeedAllowed = dev_speed > effectiveSlop ? (dev_speed - effectiveSlop) : 0;
+            auto     maxSpeedAllowed = dev_speed + effectiveSlop;
 
             if (_debug > 1) {
                 log_debug("Syncing speed. Requested: " << int(dev_speed) << " current:" << int(_sync_dev_speed));
@@ -154,10 +162,13 @@ namespace Spindles {
                     _syncing = false;
                     return;
                 }
-                if (!xQueueReceive(VFD::VFDProtocol::vfd_speed_queue, &_sync_dev_speed, pdMS_TO_TICKS(3000))) {
-                    // No speed reading arrived within 3s: the VFD never reported reaching the
-                    // requested speed (unresponsive, alarmed, or genuinely can't get there).
-                    // This is the safety net that used to be silently disabled - restore it.
+                if (!xQueueReceive(VFD::VFDProtocol::vfd_speed_queue, &_sync_dev_speed, pdMS_TO_TICKS(_sync_timeout_ms))) {
+                    // No speed reading arrived within sync_timeout_ms: the VFD never reported
+                    // reaching the requested speed (unresponsive, alarmed, or genuinely can't
+                    // get there). This is the safety net that used to be silently disabled -
+                    // restore it. If this fires during routine direction reversals, increase
+                    // sync_timeout_ms in the YAML - the default may be too tight for a spindle
+                    // with a slow decel/reversal sequence.
                     mc_critical(ExecAlarm::SpindleControl);
                     log_error(name() << ": spindle did not reach device units " << dev_speed << ". Reported value is "
                                       << _sync_dev_speed);
@@ -165,8 +176,10 @@ namespace Spindles {
                     return;
                 }
                 if (_sync_dev_speed == prev_sync_speed) {
-                    if ((xTaskGetTickCount() - last_change_ticks) >= pdMS_TO_TICKS(3000)) {
-                        break;  // speed reported unchanged for 3s straight; give up waiting
+                    if ((xTaskGetTickCount() - last_change_ticks) >= pdMS_TO_TICKS(_sync_settle_ms)) {
+                        break;  // speed reported unchanged for sync_settle_ms straight; give up
+                                 // waiting (not an error - e.g. the VFD legitimately parked at
+                                 // 0 during a direction-reversal dead time)
                     }
                 } else {
                     last_change_ticks = xTaskGetTickCount();
@@ -194,26 +207,26 @@ namespace Spindles {
 
         _last_speed = dev_speed;
 
-        if (VFD::VFDProtocol::vfd_cmd_queue) {
-            VFD::VFDProtocol::VFDaction action;
-            action.action   = VFD::VFDProtocol::actionSetSpeed;
-            action.arg      = dev_speed;
-            action.critical = (dev_speed == 0);
-            // Ignore errors because reporting is not safe from an ISR.
-            // Perhaps set a flag instead?
-            xQueueSendFromISR(VFD::VFDProtocol::vfd_cmd_queue, &action, 0);
+        if (VFD::VFDProtocol::vfd_speed_setpoint_queue) {
+            VFD::VFDProtocol::VFDSpeedSetpoint sp;
+            sp.arg      = dev_speed;
+            sp.critical = (dev_speed == 0);
+            // xQueueOverwriteFromISR always succeeds on a depth-1 queue: it replaces
+            // whatever setpoint hadn't been sent yet instead of queuing behind it.
+            xQueueOverwriteFromISR(VFD::VFDProtocol::vfd_speed_setpoint_queue, &sp, NULL);
         }
     }
 
     void VFDSpindle::setSpeed(uint32_t dev_speed) {
-        if (VFD::VFDProtocol::vfd_cmd_queue) {
-            VFD::VFDProtocol::VFDaction action;
-            action.action   = VFD::VFDProtocol::actionSetSpeed;
-            action.arg      = dev_speed;
-            action.critical = dev_speed == 0;
-            if (xQueueSend(VFD::VFDProtocol::vfd_cmd_queue, &action, 0) != pdTRUE) {
-                log_info("VFD Queue Full");
-            }
+        if (VFD::VFDProtocol::vfd_speed_setpoint_queue) {
+            VFD::VFDProtocol::VFDSpeedSetpoint sp;
+            sp.arg      = dev_speed;
+            sp.critical = dev_speed == 0;
+            // "Latest wins": a burst of speed changes (e.g. several rapid spindle-speed
+            // overrides) collapses to a single Modbus write of the final target instead of
+            // one write per intermediate value - xQueueOverwrite() always succeeds on a
+            // depth-1 queue, replacing whatever hadn't been sent yet.
+            xQueueOverwrite(VFD::VFDProtocol::vfd_speed_setpoint_queue, &sp);
         }
     }
 
@@ -239,8 +252,15 @@ namespace Spindles {
         }
         handler.item("modbus_id", _modbus_id, 0, 247);  // per https://modbus.org/docs/PI_MBUS_300.pdf
         handler.item("debug", _debug, 0, 5);
-        handler.item("poll_ms", _poll_ms, 250, 20000);
+        handler.item("poll_ms", _poll_ms, 50, 20000);
         handler.item("retries", _retries);
+        // See the member comments in VFDSpindle.h for what these tune.
+        handler.item("sync_timeout_ms", _sync_timeout_ms, 100, 60000);
+        handler.item("sync_settle_ms", _sync_settle_ms, 100, 60000);
+        handler.item("slop_rpm", _slop, 0, 1000000);
+        handler.item("slop_percent", _slop_percent, 0, 100);
+        handler.item("power_poll_ms", _power_poll_ms, 20, 60000);
+        handler.item("speed_poll_ms", _speed_poll_ms, 20, 60000);
 
         Spindle::group(handler);
         detail_->group(handler);

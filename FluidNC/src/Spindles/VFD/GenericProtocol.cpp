@@ -220,7 +220,9 @@ namespace Spindles {
         void GenericProtocol::setup_speeds(VFDSpindle* vfd) {
             vfd->shelfSpeeds(_minRPM, _maxRPM);
             vfd->setupSpeeds(_maxRPM);
-            vfd->_slop = 300;
+            if (vfd->_slop == 0) {  // not already set via YAML `slop_rpm:`
+                vfd->_slop = 300;
+            }
         }
 
         VFDProtocol::response_parser GenericProtocol::get_output_power(ModbusCommand& data) {
@@ -320,15 +322,24 @@ namespace Spindles {
                                                               // this constant only from a real speed
                                                               // measurement on this exact hardware, not from
                                                               // the register documentation alone.)
-                "03 21 03 00 01 > 03 02 rpm*6/5",            // get_rpm_cmd: the exact inverse of set_rpm_cmd
-                                                              // above (raw*6/5 undoes raw=RPM*50/60), so that
-                                                              // _sync_dev_speed ends up in the same "RPM"
-                                                              // units as the dev_speed setState() waits for.
-                                                              // This used to be *60/100, which under-reported
-                                                              // the real speed by half and made setState()'s
-                                                              // wait loop unable to ever converge (see
-                                                              // VFDSpindle.cpp) - this is the real root cause
-                                                              // of the sync hangs, not the drive-status gate
+                "03 21 03 00 01 > 03 02 rpm*60/100",         // get_rpm_cmd: raw = RPM*60/100. Empirically
+                                                              // confirmed on hardware (RPM: status field vs.
+                                                              // actual spindle speed): this is NOT the
+                                                              // algebraic inverse of set_rpm_cmd's *50/60 -
+                                                              // the write register (2001H, frequency command)
+                                                              // and read register (2103H, output frequency)
+                                                              // apparently don't share raw counts 1:1 for the
+                                                              // same physical speed on this drive (raw read
+                                                              // back is ~2x raw written for the same RPM).
+                                                              // An earlier "fix" here to *6/5 - reasoning that
+                                                              // it must be the exact inverse of set_rpm_cmd -
+                                                              // was WRONG - it made the reported/RPM: value 2x
+                                                              // the real spindle speed even though set_rpm_cmd
+                                                              // itself was already correct. Don't re-derive
+                                                              // this from set_rpm_cmd's formula; treat it as
+                                                              // independently measured (command a known RPM,
+                                                              // compare the RPM: status field against the
+                                                              // VFD's own keypad/display) before changing it.
                                                               // that was removed from setState() earlier.
                 "",                                           // get_min_rpm_cmd: not auto-queried; register
                                                               // 211AH isn't in the MS300's documented status

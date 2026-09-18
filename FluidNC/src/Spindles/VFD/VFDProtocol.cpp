@@ -13,9 +13,10 @@ namespace Spindles {
         const int        RESPONSE_WAIT_MS   = 1000;                                   // how long to wait for a response
         const TickType_t response_ticks     = RESPONSE_WAIT_MS / portTICK_PERIOD_MS;  // in milliseconds between commands
 
-        QueueHandle_t VFDProtocol::vfd_cmd_queue     = nullptr;
-        QueueHandle_t VFDProtocol::vfd_speed_queue   = nullptr;
-        TaskHandle_t  VFDProtocol::vfd_cmdTaskHandle = nullptr;
+        QueueHandle_t VFDProtocol::vfd_cmd_queue            = nullptr;
+        QueueHandle_t VFDProtocol::vfd_speed_setpoint_queue = nullptr;
+        QueueHandle_t VFDProtocol::vfd_speed_queue          = nullptr;
+        TaskHandle_t  VFDProtocol::vfd_cmdTaskHandle        = nullptr;
 
         void VFDProtocol::reportParsingErrors(ModbusCommand cmd, uint8_t* rx_message, size_t read_length) {
             hex_msg(cmd.msg, "RS485 Tx: ", cmd.tx_length);
@@ -62,18 +63,13 @@ namespace Spindles {
                 }
                 next_cmd.critical = false;
 
-                VFDaction action;
+                VFDaction        action;
+                VFDSpeedSetpoint speedSetpoint;
                 if (parser == nullptr) {
-                    // If we don't have a parser, the queue goes first.
+                    // Mode/power commands are a real FIFO and always take priority over a
+                    // pending speed setpoint.
                     if (xQueueReceive(vfd_cmd_queue, &action, 0)) {
                        switch (action.action) {
-                            case actionSetSpeed:
-                                if (!impl->prepareSetSpeedCommand(action.arg, next_cmd, instance)) {
-                                    continue;
-                                }
-                                next_cmd.critical = action.critical;
-                                break;
-
                             case actionSetMode:
                                 if (!impl->prepareSetModeCommand(SpindleState(action.arg), next_cmd, instance)) {
                                     continue;
@@ -89,9 +85,17 @@ namespace Spindles {
                                 next_cmd.critical = action.critical;
                                 break;
                         }
-                        
+
+                    } else if (xQueueReceive(vfd_speed_setpoint_queue, &speedSetpoint, 0)) {
+                        // "Latest wins": whatever is sitting here is already the newest
+                        // requested speed (see VFDSpeedSetpoint), so a burst of speed
+                        // changes costs one Modbus write, not one per intermediate step.
+                        if (!impl->prepareSetSpeedCommand(speedSetpoint.arg, next_cmd, instance)) {
+                            continue;
+                        }
+                        next_cmd.critical = speedSetpoint.critical;
                     } else {
-                        // We do not have a parser and there is nothing in the queue, so we cycle
+                        // We do not have a parser and there is nothing pending, so we cycle
                         // through the set of periodic queries.
 
                         // We poll in a cycle. Note that the switch will fall through unless we encounter a hit.
@@ -131,12 +135,28 @@ namespace Spindles {
                         // unresponsive/mc_critical handling) instead of hand-rolling a second UART
                         // transaction here.
                         if (parser == nullptr) {
-                            static uint32_t last_power_poll        = 0;
-                            const uint32_t  POWER_POLL_INTERVAL_MS = 500;
-                            uint32_t        now                    = esp_timer_get_time() / 1000;
-                            if (now - last_power_poll >= POWER_POLL_INTERVAL_MS) {
+                            static uint32_t last_power_poll = 0;
+                            uint32_t        now             = esp_timer_get_time() / 1000;
+                            if (now - last_power_poll >= instance->_power_poll_ms) {
                                 last_power_poll = now;
                                 parser          = impl->get_output_power(next_cmd);
+                            }
+                        }
+
+                        // Same idea for actual speed: for protocols with safety_polling()
+                        // disabled (e.g. GenericProtocol/DeltaMS300), get_current_speed() is
+                        // otherwise only called while _syncing (right after a commanded speed
+                        // change), so _sync_dev_speed/actual_rpm() would go stale as soon as
+                        // the spindle settles. Poll it periodically too so it stays live for
+                        // UIs that display real-time RPM (VFDSpindle::actual_rpm(), the
+                        // Report.cpp |RPM: field). No-op if safety_polling() already produced
+                        // a parser above.
+                        if (parser == nullptr) {
+                            static uint32_t last_speed_poll = 0;
+                            uint32_t        now             = esp_timer_get_time() / 1000;
+                            if (now - last_speed_poll >= instance->_speed_poll_ms) {
+                                last_speed_poll = now;
+                                parser          = impl->get_current_speed(next_cmd);
                             }
                         }
 
@@ -270,6 +290,7 @@ namespace Spindles {
                 if (!xQueueReset(vfd_cmd_queue)) {
                     log_info(spindle->name() << " spindle off, queue could not be reset");
                 }
+                xQueueReset(vfd_speed_setpoint_queue);  // drop any stale pending speed target too
             }
 
             spindle->_current_state = mode;

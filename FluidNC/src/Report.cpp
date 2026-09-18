@@ -552,6 +552,12 @@ void report_realtime_status(Channel& channel) {
     if (spindle != nullptr) {
         uint32_t power = spindle->output_power();
         msg << "|P:" << power;
+
+        // Real, currently-measured spindle speed (e.g. from the VFD's own Modbus RPM
+        // readback) - contrast with the FS: field above, which is just the last
+        // commanded/target speed (sys.spindle_speed), not a live measurement.
+        uint32_t rpm = spindle->actual_rpm();
+        msg << "|RPM:" << rpm;
     }
 
 

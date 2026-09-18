@@ -82,6 +82,12 @@ namespace Spindles {
             uint32_t get_drive_status_value() const {
                 return _drive_status;
             }
+            // Last genuinely-measured speed (see the comment on _last_good_speed above) -
+            // unlike VFDSpindle::_sync_dev_speed, this is never force-reset when a new
+            // speed is commanded, so it holds steady at the last real reading instead of
+            // jumping to a "no data yet" sentinel during the brief window before the next
+            // reading arrives.
+            uint32_t get_current_speed_value() const override { return _last_good_speed; }
             void group(Configuration::HandlerBase& handler) override {
                 handler.item("model", _model);
                 handler.item("min_RPM", _minRPM);

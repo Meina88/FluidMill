@@ -131,7 +131,9 @@ namespace Spindles {
                 spindle->shelfSpeeds(minRPM, maxRPM);
             }
             spindle->setupSpeeds(_maxFrequency);
-            spindle->_slop = std::max(_maxFrequency / 400, 1);
+            if (spindle->_slop == 0) {  // not already set via YAML `slop_rpm:`
+                spindle->_slop = std::max(_maxFrequency / 400, 1);
+            }
         }
 
         VFDProtocol::response_parser NowForeverProtocol::get_current_speed(ModbusCommand& data) {
